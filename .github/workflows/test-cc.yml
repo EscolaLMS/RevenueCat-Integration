@@ -10,7 +10,7 @@ jobs:
   phpunit-code-coverage:
     runs-on: ubuntu-latest
     container:
-      image: escolalms/php:8-work
+      image: escolalms/php:8.2
 
     services:
       mysql:
