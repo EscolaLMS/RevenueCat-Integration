@@ -3,7 +3,9 @@
 namespace EscolaLms\RevenueCatIntegration;
 
 use EscolaLms\Auth\EscolaLmsAuthServiceProvider;
-use EscolaLms\Settings\EscolaLmsSettingsServiceProvider;
+use EscolaLms\RevenueCatIntegration\Providers\SettingsServiceProvider;
+use EscolaLms\RevenueCatIntegration\Services\Contracts\WebhookServiceContract;
+use EscolaLms\RevenueCatIntegration\Services\WebhookService;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -15,7 +17,9 @@ class EscolaLmsRevenueCatIntegrationServiceProvider extends ServiceProvider
 
     public const REPOSITORIES = [];
 
-    public const SERVICES = [];
+    public const SERVICES = [
+        WebhookServiceContract::class => WebhookService::class
+    ];
 
     public $singletons = self::SERVICES + self::REPOSITORIES;
 
@@ -23,7 +27,7 @@ class EscolaLmsRevenueCatIntegrationServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__ . '/config.php', self::CONFIG_KEY);
 
-        $this->app->register(EscolaLmsSettingsServiceProvider::class);
+        $this->app->register(SettingsServiceProvider::class);
         $this->app->register(EscolaLmsAuthServiceProvider::class);
     }
 
