@@ -1,9 +1,12 @@
 name: Tests Code Coverage
 
 on:
+  # Trigger the workflow on push or pull request,
+  # but only for the main branch
   push:
     branches:
       - main
+      - master
   pull_request:
 
 jobs:
@@ -25,7 +28,7 @@ jobs:
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
     steps:
-      - name: install git
+      - name: Instantiate package
         run: apt-get install git -y
 
       - name: Instantiate package
@@ -49,7 +52,7 @@ jobs:
       - name: Run tests
         run: XDEBUG_MODE=coverage vendor/bin/phpunit  --coverage-clover coverage.xml --printer mheap\\GithubActionsReporter\\Printer
 
-      - name: Code Coverage upload
+      - name: codecov upload
         uses: codecov/codecov-action@v1
 
       - name: Setup Code Climate test-reporter
@@ -57,10 +60,13 @@ jobs:
           curl -L https://codeclimate.com/downloads/test-reporter/test-reporter-latest-linux-amd64 > ./cc-test-reporter
           chmod +x ./cc-test-reporter
 
+      - name: SafeDirFix
+        run: git config --global safe.directory '*'
+
       - name: Convert
         run: ./cc-test-reporter format-coverage coverage.xml -t clover -o codeclimate.0.json
 
       - name: Upload
         run: ./cc-test-reporter upload-coverage -i codeclimate.0.json
         env:
-          CC_TEST_REPORTER_ID: 24d39b073fa0d5fd489f641f77013cc86b5b70d16dcd364d0e8498bd532da062
+          CC_TEST_REPORTER_ID: 4e0a4f7c59343fdeb5280d01d42653f2fb57ebc1caed31c83a82b11722bb4539
