@@ -17,6 +17,7 @@ class SettingsServiceProvider extends ServiceProvider
 
             AdministrableConfig::registerConfig('escolalms_revenuecat_integration.webhooks.auth.enabled', ['required', 'boolean'], false);
             AdministrableConfig::registerConfig('escolalms_revenuecat_integration.webhooks.auth.key', ['nullable', 'string'], false);
+            AdministrableConfig::registerConfig('escolalms_revenuecat_integration.api_v1_key', ['nullable', 'string'], false);
         }
     }
 }

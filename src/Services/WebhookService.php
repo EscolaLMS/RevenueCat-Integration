@@ -2,10 +2,13 @@
 
 namespace EscolaLms\RevenueCatIntegration\Services;
 
+use EscolaLms\Cart\Events\ProductAttached;
+use EscolaLms\Payments\Enums\PaymentStatus;
+use EscolaLms\Payments\Models\Payment;
 use EscolaLms\RevenueCatIntegration\Dtos\ProcessWebhookDto;
+use EscolaLms\RevenueCatIntegration\Exceptions\ResourcesNotFound;
 use EscolaLms\RevenueCatIntegration\Services\Contracts\WebhookServiceContract;
 use EscolaLms\Cart\Enums\OrderStatus;
-use EscolaLms\Cart\Enums\ProductType;
 use EscolaLms\Cart\Enums\SubscriptionStatus;
 use EscolaLms\Cart\Events\OrderCreated;
 use EscolaLms\Cart\Models\Order;
@@ -13,19 +16,14 @@ use EscolaLms\Cart\Models\OrderItem;
 use EscolaLms\Cart\Models\Product;
 use EscolaLms\Cart\Models\ProductUser;
 use EscolaLms\Cart\Models\User;
-use EscolaLms\Cart\Services\Contracts\OrderServiceContract;
-use EscolaLms\Payments\Enums\PaymentStatus;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class WebhookService implements WebhookServiceContract
 {
-    private OrderServiceContract $orderService;
-
-    public function __construct(OrderServiceContract $orderService)
-    {
-        $this->orderService = $orderService;
-    }
-
+    /**
+     * @throws ResourcesNotFound
+     */
     public function process(ProcessWebhookDto $dto): void
     {
         $processorName = 'process' . $dto->eventTypeName();
@@ -39,7 +37,7 @@ class WebhookService implements WebhookServiceContract
 
         if (!$user || !$product) {
             Log::info(get_class($this) . ' User or product not fount', $dto->toArray());
-            return;
+            throw new ResourcesNotFound();
         }
 
         if (!method_exists($this, $processorName)) {
@@ -56,6 +54,11 @@ class WebhookService implements WebhookServiceContract
     }
 
     protected function processRenewal(User $user, Product $product, ProcessWebhookDto $dto): void
+    {
+        $this->makeOrder($user, $product, $dto);
+    }
+
+    protected function processNonRenewingPurchase(User $user, Product $product, ProcessWebhookDto $dto): void
     {
         $this->makeOrder($user, $product, $dto);
     }
@@ -78,35 +81,51 @@ class WebhookService implements WebhookServiceContract
             ->update(['status' => SubscriptionStatus::EXPIRED]);
     }
 
-    private function makeOrder(User $user, Product $product, ProcessWebhookDto $dto): void
+    protected function processSubscriptionPaused(User $user, Product $product, ProcessWebhookDto $dto): void
     {
-        $order = $this->createOrder($product, $user->getKey(), $dto);
-        $paymentProcessor = $order->process();
+        [$endDate, $status] = $this->prepareOrderData($dto);
 
-        $parameters = [
-            'return_url' => url('/'),
-            'email' => $user->email,
-            'type' => $product->type,
-            'gateway' => 'revenuecat',
-            'currency' => $dto->currency(),
-        ];
-
-        if (ProductType::isSubscriptionType($product->type)) {
-            $parameters += $product->getSubscriptionParameters();
-        }
-
-        $paymentProcessor->purchase($parameters);
-        $payment = $paymentProcessor->getPayment();
-
-        $payment->gateway_order_id = $dto->getTransactionId();
-        $payment->save();
-
-        if ($payment->status->is(PaymentStatus::CANCELLED)) {
-            $this->orderService->setCancelled($order);
-        }
+        $this->createProductUser($user, $product, $endDate, $status);
     }
 
-    public function createOrder(Product $product, int $userId, ProcessWebhookDto $dto): Order
+    protected function makeOrder(User $user, Product $product, ProcessWebhookDto $dto): void
+    {
+        [$endDate, $status] = $this->prepareOrderData($dto);
+
+        $order = $this->createOrder($product, $user->getKey(), $dto, $dto->isTrial());
+        $payment = $this->createPayment($order, $dto);
+
+        $this->createProductUser($user, $product, $endDate, $status);
+    }
+
+    private function prepareOrderData(ProcessWebhookDto $dto): array
+    {
+        $endDate = null;
+        $status = null;
+
+        if ($dto->isSubscription()) {
+            $endDate = $dto->expirationAt();
+            $status = $endDate->isFuture() ? SubscriptionStatus::ACTIVE : SubscriptionStatus::EXPIRED;
+        }
+
+        return [
+            $endDate,
+            $status,
+        ];
+    }
+
+    private function createProductUser(User $user, Product $product, ?Carbon $endDate = null, ?string $status = null): void
+    {
+        ProductUser::query()
+            ->updateOrCreate(
+                ['user_id' => $user->getKey(), 'product_id' => $product->getKey()],
+                ['quantity' => 1, 'end_date' => $endDate, 'status' => $status]
+            );
+
+        event(new ProductAttached($product, $user, 1));
+    }
+
+    private function createOrder(Product $product, int $userId, ProcessWebhookDto $dto, ?bool $isTrial = false): Order
     {
         /** @var User $user */
         $user = User::find($userId);
@@ -116,12 +135,11 @@ class WebhookService implements WebhookServiceContract
 
         $order = new Order();
         $order->user_id = $user->getKey();
-        $order->total = $dto->isTrial() ? 0 : $dto->totalPrice();
-        $order->subtotal = $dto->isTrial() ? 0 : $dto->subtotalPrice();
-        $order->tax = $dto->isTrial() ? 0 : $dto->taxRate();
-        $order->status = $dto->isTrial() ? OrderStatus::TRIAL_PROCESSING : OrderStatus::PROCESSING;
+        $order->total = $dto->totalPrice() ?? 0;
+        $order->subtotal = $dto->subtotalPrice() ?? 0;
+        $order->tax = $dto->taxRate() ?? 0;
+        $order->status = $isTrial ? OrderStatus::TRIAL_PAID : OrderStatus::PAID;
         $order->save();
-        // todo invoice data
 
         $this->createOrderItems($order, $product, $dto);
 
@@ -130,17 +148,39 @@ class WebhookService implements WebhookServiceContract
         return $order;
     }
 
-    public function createOrderItems(Order $order, Product $product, ProcessWebhookDto $dto): OrderItem
+    private function createOrderItems(Order $order, Product $product, ProcessWebhookDto $dto): OrderItem
     {
         return OrderItem::create([
             'buyable_type' => Product::class,
             'buyable_id' => $product->getKey(),
             'name' => $product->name ?? null,
-            'price' => $dto->isTrial() ? 0 : $dto->totalPrice(),
+            'price' => $dto->totalPrice() ?? 0,
             'quantity' => 1,
-            'tax_rate' => $dto->isTrial() ? 0 : $dto->taxRate(),
+            'tax_rate' => $dto->taxRate() ?? 0,
             'extra_fees' => 0,
             'order_id' => $order->getKey(),
         ]);
+    }
+
+    private function createPayment(Order $order, ProcessWebhookDto $dto): Payment
+    {
+        $payment = Payment::create([
+            'amount' => $order->getPaymentAmount(),
+            'currency' => $dto->currency(),
+            'description' => $order->getPaymentDescription(),
+            'order_id' => $order->getPaymentOrderId(),
+            'status' => PaymentStatus::PAID,
+            'driver' => 'revenuecat',
+            'gateway_order_id' => $dto->getTransactionId()
+        ]);
+
+        if ($order->getUser()) {
+            $payment->user()->associate($order->getUser());
+        }
+
+        $payment->payable()->associate($order);
+        $payment->save();
+
+        return $payment;
     }
 }

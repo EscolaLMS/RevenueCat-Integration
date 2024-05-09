@@ -37,11 +37,16 @@ class SettingsTest extends TestCase
 
         $authEnabled = $this->faker->boolean;
         $authKey = $this->faker->uuid;
+        $apiV1Key = $this->faker->uuid;
 
         $this->actingAs($user, 'api')
             ->postJson('/api/admin/config',
                 [
                     'config' => [
+                        [
+                            'key' => "{$configKey}.api_v1_key",
+                            'value' => $apiV1Key,
+                        ],
                         [
                             'key' => "{$configKey}.webhooks.auth.enabled",
                             'value' => $authEnabled,
@@ -59,6 +64,16 @@ class SettingsTest extends TestCase
             ->assertOk()
             ->assertJsonFragment([
                 $configKey => [
+                    'api_v1_key' => [
+                        'full_key' => "$configKey.api_v1_key",
+                        'key' => 'api_v1_key',
+                        'public' => false,
+                        'rules' => [
+                            'nullable', 'string'
+                        ],
+                        'value' => $apiV1Key,
+                        'readonly' => false,
+                    ],
                     'webhooks' => [
                         'auth' => [
                             'enabled' => [
@@ -89,6 +104,7 @@ class SettingsTest extends TestCase
         $this->getJson('/api/config')
             ->assertOk()
             ->assertJsonMissing([
+                'api_v1_key' => $authEnabled,
                 'webhooks.auth.enabled' => $authEnabled,
                 'webhooks.auth.key' => $authKey,
             ]);
