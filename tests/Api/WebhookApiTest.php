@@ -82,7 +82,7 @@ class WebhookApiTest extends TestCase
             $user,
             (int)(Arr::get($payload, 'event.price') * 100),
             ['end_date' => null],
-            ['tax' => 0],
+            ['total' => (int)(Arr::get($payload, 'event.price') * 100), 'subtotal' => (int)(Arr::get($payload, 'event.price') * 100),'tax' => 0],
             ['currency' => Currency::USD]
         );
     }

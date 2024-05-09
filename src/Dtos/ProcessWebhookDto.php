@@ -132,7 +132,7 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
     public function subtotalPrice(): int
     {
         if (!Currency::hasValue($this->getCurrency())) {
-            return $this->getPrice();
+            return $this->totalPrice();
         }
 
         return (int)(($this->totalPrice() / ($this->taxRate() + 100)) * 100);
