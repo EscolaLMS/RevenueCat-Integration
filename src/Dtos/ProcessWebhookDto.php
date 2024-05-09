@@ -6,6 +6,7 @@ use EscolaLms\Core\Dtos\Contracts\DtoContract;
 use EscolaLms\Core\Dtos\Contracts\InstantiateFromRequest;
 use EscolaLms\Payments\Enums\Currency;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 
@@ -32,7 +33,9 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
 
     private ?string $transactionId;
 
-    public function __construct(string $userId, string $eventType, ?string $periodType, ?string $productId, ?string $store, ?float $price, ?string $currency, ?float $priceInPurchaseCurrency, ?float $taxPercentage, ?string $transactionId)
+    private ?int $expirationAtMs;
+
+    public function __construct(string $userId, string $eventType, ?string $periodType, ?string $productId, ?string $store, ?float $price, ?string $currency, ?float $priceInPurchaseCurrency, ?float $taxPercentage, ?string $transactionId, ?int $expirationAtMs)
     {
         $this->userId = $userId;
         $this->eventType = $eventType;
@@ -44,6 +47,7 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
         $this->priceInPurchaseCurrency = $priceInPurchaseCurrency;
         $this->taxPercentage = $taxPercentage;
         $this->transactionId = $transactionId;
+        $this->expirationAtMs = $expirationAtMs;
     }
 
     public function getUserId(): string
@@ -86,14 +90,19 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
         return $this->priceInPurchaseCurrency;
     }
 
-    public function getTaxPercentage(): float
+    public function getTaxPercentage(): ?float
     {
-        return $this->taxPercentage ?? 0;
+        return $this->taxPercentage;
     }
 
     public function getTransactionId(): ?string
     {
         return $this->transactionId;
+    }
+
+    public function getExpirationAtMs(): ?int
+    {
+        return $this->expirationAtMs;
     }
 
     public function eventTypeName(): string
@@ -140,7 +149,17 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
 
     public function isTrial(): bool
     {
-        return $this->periodType === 'TRIAL';
+        return Str::lower($this->getPeriodType()) === 'trial';
+    }
+
+    public function expirationAt(): Carbon
+    {
+        return Carbon::createFromTimestampMs($this->getExpirationAtMs());
+    }
+
+    public function isSubscription(): bool
+    {
+        return $this->getExpirationAtMs() != null;
     }
 
     public function toArray(): array
@@ -156,6 +175,7 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
             'price_in_purchased_currency' => $this->getPriceInPurchaseCurrency(),
             'tax_percentage' => $this->getTaxPercentage(),
             'transaction_id' => $this->getTransactionId(),
+            'expiration_at_ms' => $this->getExpirationAtMs(),
         ];
     }
 
@@ -172,6 +192,7 @@ class ProcessWebhookDto implements DtoContract, InstantiateFromRequest
             $request->input('event.price_in_purchased_currency'),
             $request->input('event.tax_percentage'),
             $request->input('event.transaction_id'),
+            $request->input('event.expiration_at_ms'),
         );
     }
 }

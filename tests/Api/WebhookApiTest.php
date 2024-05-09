@@ -25,7 +25,7 @@ class WebhookApiTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-
+        Carbon::setTestNow(Carbon::now()->startOfDay());
         Config::set('escola_settings.use_database', true);
     }
 
@@ -42,10 +42,27 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            null,
-            [],
-            [],
+            ['end_date' => null],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+            ['currency' => Arr::get($payload, 'event.currency')]
+        );
+    }
+
+    public function testProcessWebhookNonRenewingPurchaseSingleProduct(): void
+    {
+        $user = $this->makeStudent();
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds();
+        $payload = $this->makeWebhookPayloadWith($user->getKey(), 'NON_RENEWING_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE');
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => null],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
             ['currency' => Arr::get($payload, 'event.currency')]
         );
     }
@@ -64,10 +81,8 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price') * 100),
-            0,
-            null,
-            [],
-            [],
+            ['end_date' => null],
+            ['tax' => 0],
             ['currency' => Currency::USD]
         );
     }
@@ -75,8 +90,9 @@ class WebhookApiTest extends TestCase
     public function testProcessWebhookInitialPurchaseSubscription(): void
     {
         $user = $this->makeStudent();
+        $endDate = Carbon::now()->addDays(3);
         [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
-        $payload = $this->makeWebhookPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE');
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE', $endDate);
 
         $this->postJson('api/webhooks/revenuecat', $payload)
             ->assertOk();
@@ -85,22 +101,18 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::ACTIVE,
-            [],
-            [],
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
             ['currency' => Arr::get($payload, 'event.currency')]
         );
     }
 
-    public function testProcessWebhookRenew(): void
+    public function testProcessWebhookInitialPurchaseSubscriptionPeriodFromProduct(): void
     {
-        Carbon::setTestNow(Carbon::now()->startOfDay());
-
         $user = $this->makeStudent();
-        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
-        $payload = $this->makeWebhookPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE');
         $endDate = Carbon::now()->addDays(3);
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE', $endDate);
 
         $this->postJson('api/webhooks/revenuecat', $payload)
             ->assertOk();
@@ -109,30 +121,36 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::ACTIVE,
-            ['end_date' => $endDate],
-        );
-
-        $payload['event']['type'] = 'RENEWAL';
-
-        $this->postJson('api/webhooks/revenuecat', $payload)
-            ->assertOk();
-
-        $this->assertProcessedWebhook(
-            $product,
-            $user,
-            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::ACTIVE,
-            ['end_date' => $endDate->addDays(3)],
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+            ['currency' => Arr::get($payload, 'event.currency')]
         );
     }
 
-    public function testProcessWebhookCancellation(): void
+    public function testProcessWebhookInitialPurchaseSubscriptionWithTrial(): void
     {
         $user = $this->makeStudent();
-        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
+        $endDate = Carbon::now()->addDays(7);
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true, true);
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'TRIAL', 'APP_STORE', $endDate);
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['status' => OrderStatus::TRIAL_PAID, 'tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+            ['currency' => Arr::get($payload, 'event.currency')]
+        );
+    }
+
+    public function testProcessWebhookRenewSingleProduct(): void
+    {
+        $user = $this->makeStudent();
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds();
         $payload = $this->makeWebhookPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE');
 
         $this->postJson('api/webhooks/revenuecat', $payload)
@@ -142,10 +160,80 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::ACTIVE,
             [],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+        );
+
+        $payload['event']['type'] = 'RENEWAL';
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
             [],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+        );
+    }
+
+    public function testProcessWebhookRenewSubscription(): void
+    {
+        $user = $this->makeStudent();
+        $endDate = Carbon::now()->addDays(3);
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE', $endDate);
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+        );
+
+        $endDate = $endDate->addDays(3);
+        $payload['event']['type'] = 'RENEWAL';
+        $payload['event']['expiration_at_ms'] = $endDate->getTimestampMs();
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+        );
+    }
+
+    public function testProcessWebhookSubscriptionPaused(): void
+    {
+        $user = $this->makeStudent();
+        $endDate = Carbon::now()->addDays(3);
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE', $endDate);
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $pausedDate = Carbon::now()->addMinute();
+        $payload['event']['type'] = 'SUBSCRIPTION_PAUSED';
+        $payload['event']['expiration_at_ms'] = $pausedDate->getTimestampMs();
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => $pausedDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
             ['currency' => Arr::get($payload, 'event.currency')]
         );
 
@@ -157,16 +245,17 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::CANCELLED,
+            ['status' => SubscriptionStatus::CANCELLED],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
         );
     }
 
-    public function testProcessWebhookExpiration(): void
+    public function testProcessWebhookCancellationSubscription(): void
     {
         $user = $this->makeStudent();
+        $endDate = Carbon::now()->addDays(3);
         [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
-        $payload = $this->makeWebhookPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE');
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE', $endDate);
 
         $this->postJson('api/webhooks/revenuecat', $payload)
             ->assertOk();
@@ -175,10 +264,40 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::ACTIVE,
-            [],
-            [],
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+            ['currency' => Arr::get($payload, 'event.currency')]
+        );
+
+        $payload['event']['type'] = 'CANCELLATION';
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::CANCELLED],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+        );
+    }
+
+    public function testProcessWebhookExpirationSubscription(): void
+    {
+        $user = $this->makeStudent();
+        $endDate = Carbon::now()->addDays(3);
+        [$appStoreProductId, $playStoreProductId, $product] = $this->makeProductWithStoreIds(true);
+        $payload = $this->makeWebhookSubscriptionPayloadWith($user->getKey(), 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE', $endDate);
+
+        $this->postJson('api/webhooks/revenuecat', $payload)
+            ->assertOk();
+
+        $this->assertProcessedWebhook(
+            $product,
+            $user,
+            (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::ACTIVE],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
             ['currency' => Arr::get($payload, 'event.currency')]
         );
 
@@ -190,8 +309,9 @@ class WebhookApiTest extends TestCase
             $product,
             $user,
             (int)(Arr::get($payload, 'event.price_in_purchased_currency') * 100),
-            (int)(Arr::get($payload, 'event.tax_percentage') * 100),
-            SubscriptionStatus::EXPIRED,
+            ['end_date' => $endDate, 'status' => SubscriptionStatus::EXPIRED],
+            ['tax' => (int)(Arr::get($payload, 'event.tax_percentage') * 100)],
+            ['currency' => Arr::get($payload, 'event.currency')]
         );
     }
 
@@ -202,7 +322,7 @@ class WebhookApiTest extends TestCase
         $payload = $this->makeWebhookPayloadWith($user->getKey() * -1, 'INITIAL_PURCHASE', $appStoreProductId, 'NORMAL', 'APP_STORE');
 
         $this->postJson('api/webhooks/revenuecat', $payload)
-            ->assertOk();
+            ->assertUnprocessable();
 
         $this->assertDatabaseMissing('products_users', [
             'product_id' => $product->getKey(),
@@ -225,7 +345,7 @@ class WebhookApiTest extends TestCase
         $payload = $this->makeWebhookPayloadWith($user->getKey() * -1, 'INITIAL_PURCHASE', $this->faker->word, 'NORMAL', 'APP_STORE');
 
         $this->postJson('api/webhooks/revenuecat', $payload)
-            ->assertOk();
+            ->assertUnprocessable();
 
         $this->assertDatabaseMissing('products_users', [
             'product_id' => $product->getKey(),
@@ -258,19 +378,17 @@ class WebhookApiTest extends TestCase
             ->assertForbidden();
     }
 
-    private function assertProcessedWebhook(Product $product, User $user, int $price, int $tax, ?string $status = null, ?array $productsUsersData = [], ?array $ordersData = [], ?array $paymentsData = []): void
+    private function assertProcessedWebhook(Product $product, User $user, int $price, ?array $productsUsersData = [], ?array $ordersData = [], ?array $paymentsData = []): void
     {
         $this->assertDatabaseHas('products_users', array_merge([
             'product_id' => $product->getKey(),
             'user_id' => $user->getKey(),
-            'status' => $status,
         ], $productsUsersData));
 
         $this->assertDatabaseHas('orders', array_merge([
             'user_id' => $user->getKey(),
             'status' => OrderStatus::PAID,
             'total' => $price,
-            'tax' => $tax
         ], $ordersData));
 
         $this->assertDatabaseHas('payments', array_merge([
