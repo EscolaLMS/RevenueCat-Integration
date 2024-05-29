@@ -2,7 +2,10 @@
 
 namespace EscolaLms\RevenueCatIntegration\Services;
 
+use EscolaLms\Cart\Contracts\Productable;
+use EscolaLms\Cart\Events\ProductableAttached;
 use EscolaLms\Cart\Events\ProductAttached;
+use EscolaLms\Cart\Services\Contracts\ProductServiceContract;
 use EscolaLms\Payments\Enums\PaymentStatus;
 use EscolaLms\Payments\Models\Payment;
 use EscolaLms\RevenueCatIntegration\Dtos\ProcessWebhookDto;
@@ -16,11 +19,20 @@ use EscolaLms\Cart\Models\OrderItem;
 use EscolaLms\Cart\Models\Product;
 use EscolaLms\Cart\Models\ProductUser;
 use EscolaLms\Cart\Models\User;
+use Exception;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class WebhookService implements WebhookServiceContract
 {
+    private ProductServiceContract $productService;
+
+    public function __construct(ProductServiceContract $productService)
+    {
+        $this->productService = $productService;
+    }
+
     /**
      * @throws ResourcesNotFound
      */
@@ -116,13 +128,65 @@ class WebhookService implements WebhookServiceContract
 
     private function createProductUser(User $user, Product $product, ?Carbon $endDate = null, ?string $status = null): void
     {
+        $quantity = 1;
         ProductUser::query()
             ->updateOrCreate(
                 ['user_id' => $user->getKey(), 'product_id' => $product->getKey()],
-                ['quantity' => 1, 'end_date' => $endDate, 'status' => $status]
+                ['quantity' => $quantity, 'end_date' => $endDate, 'status' => $status]
             );
 
-        event(new ProductAttached($product, $user, 1));
+        foreach ($product->productables as $productProductable) {
+            Log::debug(__('Checking if productable can be processed'));
+            if ($this->productService->isProductableClassRegistered($productProductable->productable_type)) {
+                $productable = $this->productService->findProductable($productProductable->productable_type, $productProductable->productable_id);
+                if (is_null($productable)) {
+                    Log::debug([
+                        'product' => [
+                            'id' => $product->getKey(),
+                            'name' => $product->name,
+                            'extended_model' => $productProductable->productable_type,
+                            'extended_model_id' => $productProductable->productable_id,
+                        ],
+                        'message' => __('Attached product is not exists')
+                    ]);
+                    throw new Exception(__('Attached product is not exists'));
+                }
+                $this->attachProductableToUser($productable, $user, $productProductable->quantity * $quantity, $product);
+            }
+        }
+        event(new ProductAttached($product, $user, $quantity));
+    }
+
+    public function attachProductableToUser(Productable $productable, \EscolaLms\Core\Models\User $user, int $quantity = 1, ?Product $product = null): void
+    {
+        Log::debug(__('Attaching productable to user'), [
+            'productable' => [
+                'id' => $productable->getKey(),
+                'name' => $productable->getName(),
+            ],
+            'user' => [
+                'id' => $user->getKey(),
+                'email' => $user->email,
+            ],
+            'quantity' => $quantity,
+        ]);
+
+        assert($productable instanceof Model);
+        try {
+            $productable->attachToUser($user, $quantity, $product);
+            Log::debug(
+                'Productable (should be) attached to user.',
+                [
+                    'productable_owned' => $productable->getOwnedByUserAttribute($user),
+                    'productable_owned_through_product' => $this->productService->productableIsOwnedByUserThroughProduct($productable, $user),
+                ]
+            );
+        } catch (Exception $ex) {
+            Log::error(__('Failed to attach productable to user'), [
+                'exception' => $ex->getMessage(),
+            ]);
+        }
+        event(new ProductableAttached($productable, $user, $quantity));
     }
 
     private function createOrder(Product $product, int $userId, ProcessWebhookDto $dto, ?bool $isTrial = false): Order
